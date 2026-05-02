@@ -14,7 +14,15 @@ export default function LoginPage() {
     setErr("");
     const { error } = await sb.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined }
+      options: {
+        // WICHTIG: Magic-Link MUSS auf /auth/callback führen, sonst wird der
+        // ?code=... Parameter nie gegen eine Session getauscht und der User
+        // landet wieder auf /login (Loop).
+        emailRedirectTo:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/auth/callback`
+            : undefined,
+      },
     });
     if (error) setErr(error.message);
     else setSent(true);
@@ -50,3 +58,5 @@ export default function LoginPage() {
     </main>
   );
 }
+
+
