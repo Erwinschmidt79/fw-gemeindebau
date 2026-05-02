@@ -16,14 +16,21 @@ type Bau = {
   lon: number;
   ist_gemeindebau: boolean;
   user_added: boolean;
-  crawl_status: "pending" | "stale" | "done";
+  crawl_status: "pending" | "stale" | "done" | "partial";
   stiegen_count: number;
   tueren_count: number;
+  tueren_wohnungen: number;
   tueren_mit_fw: number;
   tueren_mit_gas: number;
+  tueren_kein_gas: number;
   tueren_mit_strom: number;
-  heizung_typ: "fw" | "gas" | "andere" | "unbekannt";
+  heating_status: "fw" | "gas" | "mixed" | "other" | "unknown";
+  // legacy:
+  heizung_typ?: "fw" | "gas" | "andere" | "unbekannt";
+  gas_quote: number | null;
+  farb_kategorie: "gruen" | "hellgruen" | "gelb" | "orange" | "rot" | "grau";
   last_refresh: string | null;
+  pdflink: string | null;
 };
 
 type Filter = {
@@ -54,8 +61,23 @@ const TILE_LAYERS = {
   },
 };
 
+// Farb-Kategorien aus bauten_map (basierend auf Gas-Quote)
+const FARB_MAP: Record<string, { fill: string; stroke: string; label: string }> = {
+  gruen:     { fill: "#16a34a", stroke: "#15803d", label: "0 % Gas (gasfrei)" },
+  hellgruen: { fill: "#86efac", stroke: "#22c55e", label: "1–25 % Gas" },
+  gelb:      { fill: "#fde047", stroke: "#ca8a04", label: "26–50 % Gas" },
+  orange:    { fill: "#fb923c", stroke: "#ea580c", label: "51–75 % Gas" },
+  rot:       { fill: "#dc2626", stroke: "#991b1b", label: "76–100 % Gas" },
+  grau:      { fill: "#cbd5e1", stroke: "#94a3b8", label: "Noch nicht abgefragt" },
+};
+
 function makeIcon(b: Bau): L.DivIcon {
-  const cls = b.crawl_status === "pending" ? "pending" : b.heizung_typ;
+  const heiz = b.heating_status === "fw" ? "fw"
+            : b.heating_status === "gas" ? "gas"
+            : b.heating_status === "mixed" ? "gas"
+            : b.heating_status === "other" ? "andere"
+            : "unbekannt";
+  const cls = b.crawl_status === "pending" ? "pending" : heiz;
   const big = b.wohnungsanzahl && b.wohnungsanzahl >= 200 ? " large" : "";
   return L.divIcon({
     className: "",
@@ -72,11 +94,12 @@ function popupHTML(b: Bau): string {
   const refresh = b.last_refresh
     ? new Date(b.last_refresh).toLocaleDateString("de-AT")
     : "noch nie";
+  const quote = b.gas_quote != null ? `${b.gas_quote}% Gas` : "";
   return `
     <div style="min-width:220px;font-size:13px">
       <div style="font-weight:600;font-size:14px">${b.adresse}</div>
       <div style="color:#64748b;font-size:11px;margin-bottom:6px">
-        ${b.plz} · ${b.hofname ?? ""}
+        ${b.plz} · ${b.hofname ?? ""}${quote ? " · " + quote : ""}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px">
         <div><b>${wohn}</b><div style="font-size:10px;color:#64748b">Wohnungen</div></div>
@@ -102,27 +125,54 @@ export default function MapView() {
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const clusterRef = useRef<any>(null);
+  const polyLayerRef = useRef<L.GeoJSON | null>(null);
+  const waermeplanLayerRef = useRef<L.GeoJSON | null>(null);
   const router = useRouter();
 
   const [bauten, setBauten] = useState<Bau[]>([]);
+  const [polygonsGeo, setPolygonsGeo] = useState<any | null>(null);
+  const [waermeplanGeo, setWaermeplanGeo] = useState<any | null>(null);
   const [loaded, setLoaded] = useState(false);
+
   const [tileKey, setTileKey] = useState<keyof typeof TILE_LAYERS>("standard");
+  const [showPolygons, setShowPolygons] = useState(true);
+  const [showPins, setShowPins] = useState(false);
+  const [showWaermeplan, setShowWaermeplan] = useState(false);
   const [filter, setFilter] = useState<Filter>({
     search: "", bezirk: "",
     showFw: true, showGas: true, showAndere: true, showUnbekannt: true, showPending: true,
   });
   const [showFilter, setShowFilter] = useState(false);
+  const [showLegend, setShowLegend] = useState(true);
 
-  // Load all bauten once
+  // Load all bauten + polygons in parallel
   useEffect(() => {
     const sb = createClient();
-    sb.from("bauten_map").select("*")
-      .then((res: { data: any[] | null; error: any }) => {
-        if (res.error) { console.error(res.error); return; }
-        setBauten((res.data ?? []) as Bau[]);
-        setLoaded(true);
-      });
+    Promise.all([
+      sb.from("bauten_map").select("*").then((res: any) => {
+        if (res.error) throw res.error;
+        return (res.data ?? []) as Bau[];
+      }),
+      fetch("/gemeindebauten.geojson").then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([bautenData, polyData]) => {
+      setBauten(bautenData);
+      setPolygonsGeo(polyData);
+      setLoaded(true);
+    }).catch(err => {
+      console.error("load error", err);
+      setLoaded(true);
+    });
   }, []);
+
+  // Lazy-load Wärmeplan (~290 KB) erst wenn aktiviert
+  useEffect(() => {
+    if (showWaermeplan && !waermeplanGeo) {
+      fetch("/waermeplan.geojson")
+        .then(r => r.ok ? r.json() : null)
+        .then(setWaermeplanGeo)
+        .catch(err => console.error("Wärmeplan load failed", err));
+    }
+  }, [showWaermeplan, waermeplanGeo]);
 
   // Init map
   useEffect(() => {
@@ -131,6 +181,7 @@ export default function MapView() {
       center: [48.2082, 16.3738],
       zoom: 12,
       zoomControl: true,
+      preferCanvas: true,  // mehr Performance bei 1.6k Polygonen
     });
     mapRef.current = map;
     tileLayerRef.current = L.tileLayer(TILE_LAYERS.standard.url, {
@@ -152,6 +203,13 @@ export default function MapView() {
     }).addTo(mapRef.current);
   }, [tileKey]);
 
+  // Map: objectid → Bau für O(1) Lookup beim Polygon-Style
+  const bauByObjectId = useMemo(() => {
+    const m = new Map<number, Bau>();
+    bauten.forEach(b => m.set(b.objectid, b));
+    return m;
+  }, [bauten]);
+
   // Filter visible bauten
   const visible = useMemo(() => {
     return bauten.filter(b => {
@@ -162,20 +220,103 @@ export default function MapView() {
       }
       if (filter.bezirk && b.bezirk !== parseInt(filter.bezirk)) return false;
       if (b.crawl_status === "pending") return filter.showPending;
-      if (b.heizung_typ === "fw")        return filter.showFw;
-      if (b.heizung_typ === "gas")       return filter.showGas;
-      if (b.heizung_typ === "andere")    return filter.showAndere;
-      if (b.heizung_typ === "unbekannt") return filter.showUnbekannt;
+      const heiz = b.heating_status;
+      if (heiz === "fw")    return filter.showFw;
+      if (heiz === "gas" || heiz === "mixed") return filter.showGas;
+      if (heiz === "other") return filter.showAndere;
+      if (heiz === "unknown") return filter.showUnbekannt;
       return true;
     });
   }, [bauten, filter]);
 
-  // Render markers via cluster
+  const visibleObjectIds = useMemo(() => new Set(visible.map(b => b.objectid)), [visible]);
+
+  // Render polygons layer
+  useEffect(() => {
+    if (!mapRef.current || !loaded) return;
+    if (polyLayerRef.current) {
+      mapRef.current.removeLayer(polyLayerRef.current);
+      polyLayerRef.current = null;
+    }
+    if (!showPolygons || !polygonsGeo) return;
+
+    // Filter geojson to currently visible bauten
+    const filteredFeatures = polygonsGeo.features.filter((f: any) =>
+      visibleObjectIds.has(f.properties.objectid)
+    );
+
+    const layer = L.geoJSON({ type: "FeatureCollection", features: filteredFeatures } as any, {
+      style: (feature: any) => {
+        const b = bauByObjectId.get(feature.properties.objectid);
+        const farb = b?.farb_kategorie ?? "grau";
+        const c = FARB_MAP[farb];
+        return {
+          fillColor: c.fill,
+          fillOpacity: 0.55,
+          color: c.stroke,
+          weight: 1,
+          opacity: 0.9,
+        };
+      },
+      onEachFeature: (feature: any, lyr: L.Layer) => {
+        const b = bauByObjectId.get(feature.properties.objectid);
+        if (!b) return;
+        lyr.bindPopup(popupHTML(b), { maxWidth: 280 });
+        lyr.on("popupopen", (e: any) => {
+          const popup = e.popup.getElement();
+          const a = popup?.querySelector("a[href^='/bau/']") as HTMLAnchorElement | null;
+          if (a) a.onclick = (ev) => { ev.preventDefault(); router.push(a.getAttribute("href")!); };
+        });
+      },
+    });
+    layer.addTo(mapRef.current);
+    polyLayerRef.current = layer;
+  }, [showPolygons, polygonsGeo, visibleObjectIds, bauByObjectId, loaded, router]);
+
+  // Render Wärmeplan-Layer
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (waermeplanLayerRef.current) {
+      mapRef.current.removeLayer(waermeplanLayerRef.current);
+      waermeplanLayerRef.current = null;
+    }
+    if (!showWaermeplan || !waermeplanGeo) return;
+
+    const layer = L.geoJSON(waermeplanGeo, {
+      style: () => ({
+        fillColor: "#8b5cf6",
+        fillOpacity: 0.18,
+        color: "#7c3aed",
+        weight: 1.5,
+        dashArray: "4 3",
+      }),
+      onEachFeature: (feature: any, lyr: L.Layer) => {
+        const p = feature.properties;
+        lyr.bindPopup(`
+          <div style="font-size:13px;min-width:200px">
+            <div style="font-weight:600">Klimaschutzzone ${p.bezirk}. Bezirk</div>
+            <div style="color:#64748b;font-size:11px;margin:4px 0 8px">
+              In dieser Zone darf bei Neubau bzw. Generalsanierung kein Gas
+              mehr installiert werden.
+            </div>
+            ${p.plan_pdf ? `<a href="${p.plan_pdf}" target="_blank" style="color:#7c3aed;font-size:11px;text-decoration:underline">📄 Plan</a>` : ""}
+            ${p.verordnung_pdf ? ` · <a href="${p.verordnung_pdf}" target="_blank" style="color:#7c3aed;font-size:11px;text-decoration:underline">📄 Verordnung</a>` : ""}
+          </div>
+        `, { maxWidth: 260 });
+      },
+    });
+    layer.addTo(mapRef.current);
+    waermeplanLayerRef.current = layer;
+  }, [showWaermeplan, waermeplanGeo]);
+
+  // Render markers via cluster (optional)
   useEffect(() => {
     if (!mapRef.current || !loaded) return;
     if (clusterRef.current) {
       mapRef.current.removeLayer(clusterRef.current);
+      clusterRef.current = null;
     }
+    if (!showPins) return;
     // @ts-ignore
     const cluster = L.markerClusterGroup({
       chunkedLoading: true,
@@ -187,7 +328,6 @@ export default function MapView() {
       const m = L.marker([b.lat, b.lon], { icon: makeIcon(b) })
         .bindPopup(popupHTML(b), { maxWidth: 280 });
       m.on("popupopen", (e) => {
-        // Wire up the link inside popup to use Next.js router
         const popup = e.popup.getElement();
         const a = popup?.querySelector("a[href^='/bau/']") as HTMLAnchorElement | null;
         if (a) a.onclick = (ev) => { ev.preventDefault(); router.push(a.getAttribute("href")!); };
@@ -196,24 +336,22 @@ export default function MapView() {
     });
     mapRef.current.addLayer(cluster);
     clusterRef.current = cluster;
-  }, [visible, loaded, router]);
+  }, [visible, loaded, router, showPins]);
 
   // KPIs
   const kpis = useMemo(() => ({
     total:    bauten.length,
     visible:  visible.length,
-    fw:       bauten.filter(b => b.heizung_typ === "fw").length,
-    gas:      bauten.filter(b => b.heizung_typ === "gas").length,
+    fw:       bauten.filter(b => b.heating_status === "fw").length,
+    gas:      bauten.filter(b => b.heating_status === "gas" || b.heating_status === "mixed").length,
     pending:  bauten.filter(b => b.crawl_status === "pending").length,
-    wohn:     bauten.reduce((s, b) => s + (b.wohnungsanzahl ?? 0), 0),
-    tueren:   bauten.reduce((s, b) => s + b.tueren_count, 0),
   }), [bauten, visible]);
 
   return (
     <div className="relative h-[calc(100vh-5rem)] overflow-hidden">
       <div ref={mapEl} className="leaflet-container fullbleed" />
 
-      {/* Top: search + tile switcher */}
+      {/* Top: search + tile switcher + layer toggle */}
       <div className="absolute top-3 inset-x-3 z-[400] flex gap-2 pointer-events-none">
         <div className="flex-1 pointer-events-auto bg-white rounded-xl shadow-lg flex items-center px-3 py-2">
           <span className="text-slate-400 mr-2">🔍</span>
@@ -238,7 +376,24 @@ export default function MapView() {
       {/* Filter panel */}
       {showFilter && (
         <div className="absolute top-16 right-3 z-[400] bg-white rounded-xl shadow-xl p-3 w-72 max-w-[calc(100%-1.5rem)]">
-          <div className="text-xs font-semibold text-slate-500 mb-2">BEZIRK</div>
+          <div className="text-xs font-semibold text-slate-500 mb-2">LAYER</div>
+          <label className="flex items-center gap-2 text-sm py-1">
+            <input type="checkbox" checked={showPolygons}
+              onChange={e => setShowPolygons(e.target.checked)} />
+            🟦 Polygone (nach Gas-Anteil)
+          </label>
+          <label className="flex items-center gap-2 text-sm py-1">
+            <input type="checkbox" checked={showPins}
+              onChange={e => setShowPins(e.target.checked)} />
+            📍 Pins (nach Heizungs-Status)
+          </label>
+          <label className="flex items-center gap-2 text-sm py-1">
+            <input type="checkbox" checked={showWaermeplan}
+              onChange={e => setShowWaermeplan(e.target.checked)} />
+            🟣 Klimaschutzzonen (Wiener Energieraumplan)
+          </label>
+
+          <div className="text-xs font-semibold text-slate-500 mt-3 mb-2">BEZIRK</div>
           <select value={filter.bezirk}
             onChange={e => setFilter({...filter, bezirk: e.target.value})}
             className="w-full mb-3 border rounded-lg px-2 py-1.5 text-sm">
@@ -270,6 +425,25 @@ export default function MapView() {
         </div>
       )}
 
+      {/* Legende */}
+      {showLegend && showPolygons && (
+        <div className="absolute bottom-16 right-3 z-[400] bg-white/95 backdrop-blur rounded-xl shadow-lg p-3 text-[11px] max-w-[calc(100%-1.5rem)]">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-xs font-semibold text-slate-700">Gas-Anteil pro Bau</div>
+            <button onClick={() => setShowLegend(false)} className="text-slate-400 hover:text-slate-700 ml-2 text-xs">✕</button>
+          </div>
+          <div className="space-y-1">
+            {(["gruen","hellgruen","gelb","orange","rot","grau"] as const).map(k => (
+              <div key={k} className="flex items-center gap-2">
+                <span className="inline-block w-4 h-3 rounded-sm border"
+                  style={{ background: FARB_MAP[k].fill, borderColor: FARB_MAP[k].stroke }} />
+                <span>{FARB_MAP[k].label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Bottom KPI bar */}
       <div className="absolute bottom-3 inset-x-3 z-[400] bg-white/95 backdrop-blur rounded-xl shadow-lg px-4 py-2 flex justify-between items-center text-sm pointer-events-auto">
         <div>
@@ -291,3 +465,5 @@ export default function MapView() {
     </div>
   );
 }
+
+        
