@@ -11,6 +11,8 @@ type Bau = {
   objectid: number; bezirk: number; plz: string; adresse: string;
   hofname: string | null; wohnungsanzahl: number | null;
   lat: number; lon: number; ist_gemeindebau: boolean;
+  pdflink: string | null;
+  baujahr: number | null;
 };
 
 type Stiege = {
@@ -52,6 +54,22 @@ function badge(v: string | null | undefined) {
   return <span className={`text-[11px] px-1.5 py-0.5 rounded border ${cls}`}>{v}</span>;
 }
 
+// Gas UNBEKANNT bei Wohnung (Strom=JA) bedeutet "kein Gaszähler" → NEIN anzeigen
+function badgeGasEffektiv(gas: SparteRow | null, strom: SparteRow | null) {
+  if (!gas) return badge(null);
+  if (gas.verfuegbar === "UNBEKANNT" && strom?.verfuegbar === "JA") {
+    return (
+      <span
+        title="Kein Gaszähler vorhanden (API liefert UNBEKANNT)"
+        className="text-[11px] px-1.5 py-0.5 rounded border bg-slate-100 text-slate-500 border-slate-200"
+      >
+        NEIN
+      </span>
+    );
+  }
+  return badge(gas.verfuegbar);
+}
+
 export default function BauDetail() {
   const params = useParams();
   const router = useRouter();
@@ -74,7 +92,13 @@ export default function BauDetail() {
       if (!active) return;
       setBau(b as Bau);
 
-      const { data: s } = await sb.from("stiege").select("*").eq("objectid", objectid).order("stiege");
+      // Stiegen sortieren: zuerst nach Hausnummer (19 vor 19-23), dann nach Stiegen-Label
+      const { data: s } = await sb
+        .from("stiege")
+        .select("*")
+        .eq("objectid", objectid)
+        .order("hausnummer")
+        .order("stiege");
       if (!active) return;
       setStiegen((s ?? []) as Stiege[]);
 
@@ -167,7 +191,7 @@ export default function BauDetail() {
     const cols = [
       "stiege","tuernr","gebadr1","anladr1","vstelle",
       "strom","strom_zp","strom_smartmeter","strom_lastprofil","strom_tarif",
-      "gas","gas_zp","gas_lastprofil","gas_tarif",
+      "gas","gas_effektiv","gas_zp","gas_lastprofil","gas_tarif",
       "fernwaerme","fw_nutzungsObjektId","fw_vertragsBeginn","fw_lieferkomponente",
       "internet","iptv","voip","b2b_glasfaser","mobiles_internet"
     ];
@@ -180,10 +204,14 @@ export default function BauDetail() {
         if (!key) return r.verfuegbar ?? "";
         return r.details?.[0]?.[key] ?? "";
       };
+      // Gas-Effektiv: UNBEKANNT bei Wohnung -> NEIN
+      const gasRaw = tuerSparteByKey(t.id, "Gas")?.verfuegbar ?? "";
+      const stromRaw = tuerSparteByKey(t.id, "Strom")?.verfuegbar ?? "";
+      const gasEff = (gasRaw === "UNBEKANNT" && stromRaw === "JA") ? "NEIN" : gasRaw;
       const row = [
         stg?.stiege ?? "", t.tuernr, stg?.gebadr1 ?? "", t.anladr1, t.vstelle ?? "",
         get("Strom"), get("Strom","zaehlpunktnummer"), get("Strom","smartMeter"), get("Strom","lastprofil"), get("Strom","tarifTyp"),
-        get("Gas"),   get("Gas","zaehlpunktnummer"),   get("Gas","lastprofil"),   get("Gas","tarifTyp"),
+        gasRaw, gasEff, get("Gas","zaehlpunktnummer"), get("Gas","lastprofil"), get("Gas","tarifTyp"),
         get("Fernwaerme"), get("Fernwaerme","nutzungsObjektId"), get("Fernwaerme","vertragsBeginn"), get("Fernwaerme","lieferkomponente"),
         get("Internet"), get("Iptv"), get("Voip"), get("B2B Glasfaser"), get("Mobiles Internet"),
       ];
@@ -217,7 +245,18 @@ export default function BauDetail() {
           {bau.hofname && (
             <div className="text-sm text-blue-200/70 mt-0.5">
               Hofname: <b className="text-white/90">{bau.hofname}</b>
+              {bau.baujahr && <span className="ml-2">· Baujahr {bau.baujahr}</span>}
             </div>
+          )}
+          {bau.pdflink && (
+            <a
+              href={bau.pdflink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 mt-2 px-3 py-1 bg-white/10 hover:bg-white/20 text-blue-100 text-xs rounded border border-white/20 transition"
+            >
+              📄 Hofinformation (PDF)
+            </a>
           )}
 
           {/* KPI cards */}
@@ -284,7 +323,7 @@ export default function BauDetail() {
                       <span className={`text-slate-400 transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
                       <div className="flex-1">
                         <div className="font-semibold text-sm">
-                          Stiege {s.stiege || "—"}
+                          Stiege {s.gebadr1 || s.stiege || "—"}
                           {s.tuernr_stiege && (
                             <span className="ml-2 text-xs text-slate-500 font-normal">
                               ({s.tuernr_stiege})
@@ -416,7 +455,7 @@ function TuerTable({ tueren, getter, showAll }: {
                 <td className="px-2 py-1.5">{badge(strom?.verfuegbar)}</td>
                 <td className="px-2 py-1.5 font-mono text-[10px]">{strom?.details?.[0]?.zaehlpunktnummer ?? ""}</td>
                 <td className="px-2 py-1.5 text-[10px]">{strom?.details?.[0]?.smartMeter === "X" ? "✓" : ""}</td>
-                <td className="px-2 py-1.5">{badge(gas?.verfuegbar)}</td>
+                <td className="px-2 py-1.5">{badgeGasEffektiv(gas, strom)}</td>
                 <td className="px-2 py-1.5 font-mono text-[10px]">{gas?.details?.[0]?.zaehlpunktnummer ?? ""}</td>
                 <td className="px-2 py-1.5">{badge(fw?.verfuegbar)}</td>
                 <td className="px-2 py-1.5 text-[10px]">{fw?.details?.[0]?.vertragsBeginn ?? ""}</td>
