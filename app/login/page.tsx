@@ -1,3 +1,4 @@
+// app/login/page.tsx
 'use client';
 import { useState } from "react";
 import { createClient } from "@/lib/supabase";
@@ -11,12 +12,9 @@ export default function LoginPage() {
   async function send(e: React.FormEvent) {
     e.preventDefault();
     setErr("");
-    const redirectTo = typeof window !== "undefined"
-      ? `${window.location.origin}/auth/callback`
-      : undefined;
     const { error } = await sb.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: redirectTo }
+      options: { emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined }
     });
     if (error) setErr(error.message);
     else setSent(true);

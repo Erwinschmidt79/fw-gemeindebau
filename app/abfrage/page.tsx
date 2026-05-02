@@ -1,8 +1,8 @@
 // app/abfrage/page.tsx
 'use client';
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 type Bau = {
@@ -15,9 +15,19 @@ type Bau = {
   ist_gemeindebau: boolean;
 };
 
-export default function Abfrage() {
+export default function AbfragePage() {
+  return (
+    <Suspense fallback={<main className="max-w-2xl mx-auto p-4">Lade…</main>}>
+      <Abfrage />
+    </Suspense>
+  );
+}
+
+function Abfrage() {
   const sb = createClient();
   const router = useRouter();
+  const params = useSearchParams();
+  const deeplinkId = params.get("objectid");
   const [search, setSearch] = useState("");
   const [bezirk, setBezirk] = useState<string>("");
   const [hits, setHits] = useState<Bau[]>([]);
@@ -28,6 +38,16 @@ export default function Abfrage() {
   const [forceRefresh, setForceRefresh] = useState(false);
   const [busy, setBusy] = useState(false);
   const [warning, setWarning] = useState<string|null>(null);
+
+  // Deeplink: ?objectid=NN → Bau direkt vorausgewählt aus der Karte
+  useEffect(() => {
+    if (!deeplinkId || picked) return;
+    sb.from("gemeindebau")
+      .select("objectid,bezirk,plz,adresse,hofname,wohnungsanzahl,ist_gemeindebau")
+      .eq("objectid", parseInt(deeplinkId))
+      .single()
+      .then(({ data }) => { if (data) setPicked(data as Bau); });
+  }, [deeplinkId]);
 
   // Autocomplete
   useEffect(() => {
