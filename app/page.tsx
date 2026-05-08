@@ -1,9 +1,10 @@
 // app/page.tsx
 import Link from "next/link";
-import dynamic from "next/dynamic";
+import nextDynamic from "next/dynamic";
 
-// Leaflet braucht window — kein SSR
-const MapClient = dynamic(() => import("./_components/MapClient"), {
+export const dynamic = "force-dynamic";
+
+const MapClient = nextDynamic(() => import("./_components/MapClient"), {
   ssr: false,
   loading: () => (
     <div className="flex items-center justify-center h-[calc(100dvh-52px)] text-slate-400 text-sm">
@@ -11,8 +12,6 @@ const MapClient = dynamic(() => import("./_components/MapClient"), {
     </div>
   ),
 });
-
-export const dynamic_page = "force-dynamic";
 
 export default async function Home() {
   return (
