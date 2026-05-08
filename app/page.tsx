@@ -1,6 +1,6 @@
 // app/page.tsx
 import Link from "next/link";
-import MapClientWrapper from "./_components/MapClientWrapper";
+import MapClient from "./_components/MapClient";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +19,7 @@ export default async function Home() {
           </Link>
         </div>
       </header>
-      <MapClientWrapper />
+      <MapClient />
     </div>
   );
 }
