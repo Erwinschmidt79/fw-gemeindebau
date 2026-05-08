@@ -466,9 +466,10 @@ export default function MapView() {
         </div>
       )}
 
-      {/* DEBUG – bitte screenshot machen und mir schicken */}
+      {/* DEBUG */}
       <div className="absolute top-20 left-2 z-[9999] bg-black/80 text-white text-xs p-2 rounded space-y-1 pointer-events-none">
-        <div>loaded: {String(loaded)}</div>
-        <div>bauten: {bauten.length}</div>
-        <div>polygonsGeo: {polygonsGeo ? `${polygonsGeo.features?.length} features` : "null"}</div>
-        <div>mapRef: {mapRef.current ?
+        <div>{"loaded: " + String(loaded)}</div>
+        <div>{"bauten: " + bauten.length}</div>
+        <div>{"geo: " + (polygonsGeo ? polygonsGeo.features?.length + " feat" : "null")}</div>
+        <div>{"map: " + (mapRef.current ? "ok" : "null")}</div>
+        <div
