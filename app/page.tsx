@@ -1,17 +1,8 @@
 // app/page.tsx
 import Link from "next/link";
-import nextDynamic from "next/dynamic";
+import MapClientWrapper from "./_components/MapClientWrapper";
 
 export const dynamic = "force-dynamic";
-
-const MapClient = nextDynamic(() => import("./_components/MapClient"), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-[calc(100dvh-52px)] text-slate-400 text-sm">
-      Karte wird geladen…
-    </div>
-  ),
-});
 
 export default async function Home() {
   return (
@@ -28,7 +19,7 @@ export default async function Home() {
           </Link>
         </div>
       </header>
-      <MapClient />
+      <MapClientWrapper />
     </div>
   );
 }
