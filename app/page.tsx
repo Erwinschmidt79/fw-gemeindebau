@@ -1,16 +1,10 @@
 // app/page.tsx
-import { redirect } from "next/navigation";
 import Link from "next/link";
-import { createServerSupabase } from "@/lib/supabase-server";
 import MapClient from "./_components/MapClient";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const sb = await createServerSupabase();
-  const { data: { user } } = await sb.auth.getUser();
-  if (!user) redirect("/login");
-
   return (
     <div>
       <header className="hero-dark text-white px-4 pt-3 pb-2">
